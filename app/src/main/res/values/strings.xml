@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">X</string>
+    <string name="creator_name">Wasil</string>
+    <string name="accessibility_service_description">Allows X to automatically click buttons like the Send message button in WhatsApp for you.</string>
+</resources>
