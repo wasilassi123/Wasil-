@@ -1,71 +1,48 @@
 package com.example.ui
 
+import android.content.Context
 import android.content.Intent
-import android.os.Build
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.infiniteRepeatable
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Button
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import com.example.ZoyaForegroundService
-import com.example.live.ZoyaState
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.border
-
-import androidx.compose.foundation.BorderStroke
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.TextField
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.runtime.collectAsState
+import com.example.BuildConfig
+import com.example.ZoyaForegroundService
+import com.example.accessibility.ZoyaAccessibilityService
+import com.example.live.ZoyaState
 
-import android.content.Context
-import android.net.Uri
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.TextButton
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Clear
-
-
+enum class MainTab {
+    CONSOLE,
+    TERMINAL
+}
 
 @Composable
 fun ZoyaScreen() {
@@ -85,155 +62,260 @@ fun ZoyaScreen() {
     }
 }
 
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(onNavigateToChat: () -> Unit) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("ZoyaPrefs", Context.MODE_PRIVATE) }
-    var apiKey by remember { mutableStateOf(prefs.getString("api_key", "") ?: "") }
-    var showApiKeyDialog by remember { mutableStateOf(apiKey.isEmpty()) }
+    val initialKey = remember {
+        prefs.getString("api_key", "")?.takeIf { it.isNotEmpty() }
+            ?: BuildConfig.GEMINI_API_KEY.takeIf { it.isNotEmpty() && it != "MY_GEMINI_API_KEY" }
+            ?: ""
+    }
+    var apiKey by remember { mutableStateOf(initialKey) }
+    var showApiKeyDialog by remember { mutableStateOf(false) }
     var zoyaState by remember { mutableStateOf(ZoyaForegroundService.currentState) }
     var serviceStarted by remember { mutableStateOf(ZoyaForegroundService.activeService != null) }
-    var showMenu by remember { mutableStateOf(false) }
+    var currentTab by remember { mutableStateOf(MainTab.CONSOLE) }
 
-    val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         if (permissions[android.Manifest.permission.RECORD_AUDIO] == true) {
             val intent = Intent(context, ZoyaForegroundService::class.java)
             ContextCompat.startForegroundService(context, intent)
             serviceStarted = true
+            Toast.makeText(context, "Voice Uplink Initialized", Toast.LENGTH_SHORT).show()
         } else {
-            android.widget.Toast.makeText(context, "Microphone permission is required!", android.widget.Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Microphone permission is required!", Toast.LENGTH_SHORT).show()
         }
     }
 
     LaunchedEffect(Unit) {
         ZoyaForegroundService.onStateChange = { state ->
             zoyaState = state
+            serviceStarted = (state != ZoyaState.IDLE) || (ZoyaForegroundService.activeService != null)
         }
     }
 
-    androidx.compose.material3.Scaffold(
+    val stateColor by animateColorAsState(
+        targetValue = when (zoyaState) {
+            ZoyaState.LISTENING -> Color(0xFFB388FF)
+            ZoyaState.THINKING -> Color(0xFFFFD180)
+            ZoyaState.SPEAKING -> Color(0xFF69F0AE)
+            ZoyaState.IDLE -> if (serviceStarted) Color(0xFF80D8FF) else Color(0xFF78909C)
+        },
+        animationSpec = tween(400),
+        label = "stateColor"
+    )
+
+    val isAccessibilityActive = ZoyaAccessibilityService.instance != null
+
+    Scaffold(
         topBar = {
-            androidx.compose.material3.TopAppBar(
+            TopAppBar(
                 title = {
-                    Column {
-                        Text("X", color = Color.White, fontWeight = FontWeight.Light, fontSize = 24.sp, letterSpacing = 2.sp)
-                        Text("Created by Wasil", color = Color.White.copy(alpha = 0.5f), fontSize = 11.sp, letterSpacing = 1.sp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color.White.copy(alpha = 0.08f))
+                                .border(1.dp, stateColor.copy(alpha = 0.4f), RoundedCornerShape(10.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "X",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp
+                            )
+                        }
+                        Column {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = "X ASSISTANT",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 16.sp,
+                                    letterSpacing = 1.2.sp
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .clip(CircleShape)
+                                        .background(stateColor)
+                                )
+                            }
+                            Text(
+                                text = "Created by Wasil",
+                                color = Color.White.copy(alpha = 0.5f),
+                                fontSize = 11.sp,
+                                letterSpacing = 0.5.sp
+                            )
+                        }
                     }
                 },
-                colors = androidx.compose.material3.TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color.Transparent
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color(0xFF0A0C14).copy(alpha = 0.95f)
                 ),
                 actions = {
-                    androidx.compose.material3.IconButton(
-                        onClick = { showMenu = !showMenu },
+                    IconButton(
+                        onClick = { showApiKeyDialog = true },
                         modifier = Modifier
-                            .background(Color.White.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
+                            .padding(end = 8.dp)
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.White.copy(alpha = 0.07f))
+                            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
                     ) {
-                        Text("⚙", color = Color.White, fontSize = 20.sp)
-                    }
-                    androidx.compose.material3.DropdownMenu(
-                        expanded = showMenu,
-                        onDismissRequest = { showMenu = false },
-                        modifier = Modifier
-                            .background(Color(0xFF1E1E2E).copy(alpha = 0.9f))
-                            .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
-                    ) {
-                        androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("View Logs", color = Color.White) },
-                            onClick = {
-                                showMenu = false
-                                onNavigateToChat()
-                            }
-                        )
-                        androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("API Key Settings", color = Color.White) },
-                            onClick = {
-                                showMenu = false
-                                showApiKeyDialog = true
-                            }
-                        )
-                        androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("Accessibility Settings (Auto-Click)", color = Color.White) },
-                            onClick = {
-                                showMenu = false
-                                val intent = Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                                context.startActivity(intent)
-                            }
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Settings",
+                            tint = Color.White.copy(alpha = 0.85f),
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
             )
         },
-        containerColor = Color.Transparent
+        containerColor = Color(0xFF08090F)
     ) { paddingValues ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
-                    androidx.compose.ui.graphics.Brush.radialGradient(
-                        colors = listOf(Color(0xFF1A1A2E), Color(0xFF0F0F1A)),
-                        radius = 1500f
+                    Brush.radialGradient(
+                        colors = listOf(
+                            Color(0xFF14192B),
+                            Color(0xFF08090F)
+                        ),
+                        radius = 1600f
                     )
                 )
-                .padding(paddingValues),
-            contentAlignment = Alignment.Center
+                .padding(paddingValues)
         ) {
             Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
-                    .padding(24.dp)
-                    .background(
-                        color = Color.White.copy(alpha = 0.05f),
-                        shape = RoundedCornerShape(32.dp)
-                    )
-                    .border(
-                        width = 1.dp,
-                        color = Color.White.copy(alpha = 0.15f),
-                        shape = RoundedCornerShape(32.dp)
-                    )
-                    .padding(32.dp)
+                    .fillMaxSize()
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Spacer(modifier = Modifier.height(20.dp))
-                
-                ZoyaOrb(state = zoyaState)
-                
-                Spacer(modifier = Modifier.height(60.dp))
-
-                if (!serviceStarted) {
-                    if (apiKey.isEmpty()) {
-                        androidx.compose.material3.Button(
-                            modifier = Modifier.testTag("setup_api_button"),
-                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                containerColor = Color.White.copy(alpha = 0.1f),
-                                contentColor = Color.White
-                            ),
-                            shape = RoundedCornerShape(24.dp),
-                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
-                            onClick = {
-                                showApiKeyDialog = true
-                            }
+                // Segmented Tab Pill Selector (Console vs Terminal)
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = Color.White.copy(alpha = 0.06f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(4.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        // Console Tab
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(
+                                    if (currentTab == MainTab.CONSOLE) stateColor.copy(alpha = 0.2f)
+                                    else Color.Transparent
+                                )
+                                .border(
+                                    width = if (currentTab == MainTab.CONSOLE) 1.dp else 0.dp,
+                                    color = if (currentTab == MainTab.CONSOLE) stateColor.copy(alpha = 0.5f) else Color.Transparent,
+                                    shape = RoundedCornerShape(20.dp)
+                                )
+                                .clickable { currentTab = MainTab.CONSOLE }
+                                .padding(vertical = 10.dp),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Text("Setup API Key", fontWeight = FontWeight.Medium, fontSize = 16.sp, modifier = Modifier.padding(vertical = 8.dp, horizontal = 16.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.GraphicEq,
+                                    contentDescription = "Console",
+                                    tint = if (currentTab == MainTab.CONSOLE) Color.White else Color.White.copy(alpha = 0.6f),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "Orb Console",
+                                    color = if (currentTab == MainTab.CONSOLE) Color.White else Color.White.copy(alpha = 0.6f),
+                                    fontSize = 13.sp,
+                                    fontWeight = if (currentTab == MainTab.CONSOLE) FontWeight.SemiBold else FontWeight.Normal
+                                )
+                            }
                         }
-                    } else {
-                        androidx.compose.material3.Button(
-                            modifier = Modifier.testTag("start_zoya_button"),
-                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                containerColor = Color.White.copy(alpha = 0.1f),
-                                contentColor = Color.White
-                            ),
-                            shape = RoundedCornerShape(24.dp),
-                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
-                            onClick = {
+
+                        // Terminal Tab
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(
+                                    if (currentTab == MainTab.TERMINAL) Color(0xFF00E5FF).copy(alpha = 0.18f)
+                                    else Color.Transparent
+                                )
+                                .border(
+                                    width = if (currentTab == MainTab.TERMINAL) 1.dp else 0.dp,
+                                    color = if (currentTab == MainTab.TERMINAL) Color(0xFF00E5FF).copy(alpha = 0.5f) else Color.Transparent,
+                                    shape = RoundedCornerShape(20.dp)
+                                )
+                                .clickable { currentTab = MainTab.TERMINAL }
+                                .padding(vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Chat,
+                                    contentDescription = "Activity Logs",
+                                    tint = if (currentTab == MainTab.TERMINAL) Color.White else Color.White.copy(alpha = 0.6f),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "Live Activity",
+                                    color = if (currentTab == MainTab.TERMINAL) Color.White else Color.White.copy(alpha = 0.6f),
+                                    fontSize = 13.sp,
+                                    fontWeight = if (currentTab == MainTab.TERMINAL) FontWeight.SemiBold else FontWeight.Normal
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                when (currentTab) {
+                    MainTab.CONSOLE -> {
+                        ConsoleView(
+                            state = zoyaState,
+                            serviceStarted = serviceStarted,
+                            stateColor = stateColor,
+                            apiKey = apiKey,
+                            isAccessibilityActive = isAccessibilityActive,
+                            onOpenApiKeyDialog = { showApiKeyDialog = true },
+                            onStartService = {
                                 val hasMic = ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
                                 val hasContacts = ContextCompat.checkSelfPermission(context, android.Manifest.permission.READ_CONTACTS) == android.content.pm.PackageManager.PERMISSION_GRANTED
                                 val hasPhone = ContextCompat.checkSelfPermission(context, android.Manifest.permission.CALL_PHONE) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                                
-                                if (hasMic && hasContacts && hasPhone) {
+                                val hasPhoneState = ContextCompat.checkSelfPermission(context, android.Manifest.permission.READ_PHONE_STATE) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+                                if (hasMic && hasContacts && hasPhone && hasPhoneState) {
                                     val intent = Intent(context, ZoyaForegroundService::class.java)
                                     ContextCompat.startForegroundService(context, intent)
                                     serviceStarted = true
@@ -242,429 +324,126 @@ fun HomeScreen(onNavigateToChat: () -> Unit) {
                                         arrayOf(
                                             android.Manifest.permission.RECORD_AUDIO,
                                             android.Manifest.permission.READ_CONTACTS,
-                                            android.Manifest.permission.CALL_PHONE
+                                            android.Manifest.permission.CALL_PHONE,
+                                            android.Manifest.permission.READ_PHONE_STATE
                                         )
                                     )
                                 }
-                            }
-                        ) {
-                            Text("Initialize X", fontWeight = FontWeight.Medium, fontSize = 16.sp, modifier = Modifier.padding(vertical = 8.dp, horizontal = 16.dp))
-                        }
-                    }
-                } else if (zoyaState == ZoyaState.IDLE) {
-                    androidx.compose.material3.Button(
-                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                            containerColor = Color.White.copy(alpha = 0.1f),
-                            contentColor = Color.White
-                        ),
-                        shape = RoundedCornerShape(24.dp),
-                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
-                        onClick = {
-                            val service = ZoyaForegroundService.activeService
-                            if (service != null) {
-                                service.reconnectSession()
-                            } else {
+                            },
+                            onStopService = {
                                 val intent = Intent(context, ZoyaForegroundService::class.java)
-                                ContextCompat.startForegroundService(context, intent)
-                            }
-                        }
-                    ) {
-                        Text("Reconnect Uplink", fontWeight = FontWeight.Medium, fontSize = 16.sp, modifier = Modifier.padding(vertical = 8.dp, horizontal = 16.dp))
-                    }
-                    
-                    Spacer(modifier = Modifier.height(16.dp))
-                    
-                    androidx.compose.material3.Button(
-                        onClick = {
-                            val intent = Intent(context, ZoyaForegroundService::class.java)
-                            context.stopService(intent)
-                            serviceStarted = false
-                        },
-                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFFE53935).copy(alpha = 0.2f),
-                            contentColor = Color(0xFFEF9A9A)
-                        ),
-                        border = BorderStroke(1.dp, Color(0xFFE53935).copy(alpha = 0.3f)),
-                        shape = RoundedCornerShape(24.dp)
-                    ) {
-                        Text("Terminate Session", fontWeight = FontWeight.Medium, fontSize = 16.sp, modifier = Modifier.padding(vertical = 8.dp, horizontal = 16.dp))
-                    }
-                } else {
-                    Text(
-                        text = when (zoyaState) {
-                            ZoyaState.LISTENING -> "Awaiting Input..."
-                            ZoyaState.THINKING -> "Processing Data..."
-                            ZoyaState.SPEAKING -> "Transmitting..."
-                            else -> ""
-                        },
-                        color = Color.White.copy(alpha = 0.9f),
-                        fontWeight = FontWeight.Medium,
-                        fontSize = 18.sp,
-                        modifier = Modifier
-                            .background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(16.dp))
-                            .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(16.dp))
-                            .padding(horizontal = 24.dp, vertical = 12.dp)
-                    )
-                    
-                    Spacer(modifier = Modifier.height(24.dp))
-                    
-                    androidx.compose.material3.Button(
-                        onClick = {
-                            val intent = Intent(context, ZoyaForegroundService::class.java)
-                            context.stopService(intent)
-                            serviceStarted = false
-                        },
-                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFFE53935).copy(alpha = 0.2f),
-                            contentColor = Color(0xFFEF9A9A)
-                        ),
-                        border = BorderStroke(1.dp, Color(0xFFE53935).copy(alpha = 0.3f)),
-                        shape = RoundedCornerShape(24.dp)
-                    ) {
-                        Text("Disconnect", fontWeight = FontWeight.Medium, fontSize = 16.sp, modifier = Modifier.padding(vertical = 8.dp, horizontal = 16.dp))
-                    }
-                }
-                
-                Spacer(modifier = Modifier.height(28.dp))
-                Text(
-                    text = "Created by Wasil",
-                    color = Color.White.copy(alpha = 0.4f),
-                    fontSize = 12.sp,
-                    letterSpacing = 1.2.sp,
-                    fontWeight = FontWeight.Normal
-                )
-            }
-        }
-    }    
-    if (showApiKeyDialog) {
-        var tempKey by remember { mutableStateOf(apiKey) }
-        AlertDialog(
-            onDismissRequest = { showApiKeyDialog = false },
-            title = { Text("Gemini API Key") },
-            text = {
-                Column {
-                    Text("Enter your Gemini API key to use X.")
-                    Spacer(modifier = Modifier.height(8.dp))
-                    TextField(
-                        value = tempKey,
-                        onValueChange = { tempKey = it },
-                        placeholder = { Text("AIza...") },
-                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                        trailingIcon = {
-                            if (tempKey.isNotEmpty()) {
-                                androidx.compose.material3.IconButton(onClick = { tempKey = "" }) {
-                                    androidx.compose.material3.Icon(
-                                        imageVector = Icons.Filled.Clear,
-                                        contentDescription = "Clear text"
-                                    )
+                                context.stopService(intent)
+                                serviceStarted = false
+                            },
+                            onReconnect = {
+                                val service = ZoyaForegroundService.activeService
+                                if (service != null) {
+                                    service.reconnectSession()
+                                } else {
+                                    val intent = Intent(context, ZoyaForegroundService::class.java)
+                                    ContextCompat.startForegroundService(context, intent)
+                                }
+                            },
+                            onQuickPrompt = { prompt ->
+                                val service = ZoyaForegroundService.activeService
+                                if (service != null) {
+                                    service.sendTextMessage(prompt)
+                                    Toast.makeText(context, "Command dispatched to X", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "Start Voice Uplink to execute commands", Toast.LENGTH_SHORT).show()
                                 }
                             }
-                        }
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Get your API key here",
-                        color = Color(0xFF00B0FF),
-                        modifier = Modifier.clickable {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://aistudio.google.com/app/apikey"))
-                            context.startActivity(intent)
-                        }
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        prefs.edit().putString("api_key", tempKey).apply()
-                        apiKey = tempKey
-                        showApiKeyDialog = false
+                        )
                     }
-                ) {
-                    Text("Save")
+                    MainTab.TERMINAL -> {
+                        TerminalView(
+                            state = zoyaState,
+                            onSendMessage = { text ->
+                                val service = ZoyaForegroundService.activeService
+                                if (service != null) {
+                                    service.sendTextMessage(text)
+                                } else {
+                                    Toast.makeText(context, "Please start X first", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            onReconnect = {
+                                ZoyaForegroundService.activeService?.reconnectSession()
+                            }
+                        )
+                    }
                 }
+            }
+        }
+    }
+
+    if (showApiKeyDialog) {
+        ApiKeySettingsDialog(
+            currentKey = apiKey,
+            onDismiss = { showApiKeyDialog = false },
+            onSave = { newKey ->
+                prefs.edit().putString("api_key", newKey).apply()
+                apiKey = newKey
+                showApiKeyDialog = false
+                Toast.makeText(context, "API Key Saved", Toast.LENGTH_SHORT).show()
             },
-            dismissButton = {
-                TextButton(onClick = { showApiKeyDialog = false }) {
-                    Text("Cancel")
-                }
+            onOpenAccessibility = {
+                val intent = Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                context.startActivity(intent)
             }
         )
-    }
-
-}
-
-
-
-@Composable
-fun ZoyaOrb(state: ZoyaState) {
-    val radiusScale = remember { Animatable(1f) }
-    val glowAlpha = remember { Animatable(0.5f) }
-    val rotateAngle = remember { Animatable(0f) }
-    
-    // Ring rotations
-    val ring1Angle = remember { Animatable(0f) }
-    val ring2Angle = remember { Animatable(120f) }
-    val ring3Angle = remember { Animatable(240f) }
-    val ring4Angle = remember { Animatable(45f) }
-
-    LaunchedEffect(state) {
-        when (state) {
-            ZoyaState.IDLE -> {
-                radiusScale.animateTo(1f, animationSpec = tween(1000))
-                glowAlpha.animateTo(
-                    targetValue = 0.4f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(2500, easing = FastOutSlowInEasing),
-                        repeatMode = RepeatMode.Reverse
-                    )
-                )
-            }
-            ZoyaState.LISTENING -> {
-                radiusScale.animateTo(1.1f, animationSpec = tween(500))
-                glowAlpha.animateTo(
-                    targetValue = 0.8f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(800, easing = FastOutSlowInEasing),
-                        repeatMode = RepeatMode.Reverse
-                    )
-                )
-            }
-            ZoyaState.THINKING -> {
-                radiusScale.animateTo(1.05f, animationSpec = tween(400))
-                glowAlpha.animateTo(
-                    targetValue = 0.6f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(1200, easing = FastOutSlowInEasing),
-                        repeatMode = RepeatMode.Reverse
-                    )
-                )
-            }
-            ZoyaState.SPEAKING -> {
-                radiusScale.animateTo(1.2f, animationSpec = tween(200))
-                glowAlpha.animateTo(
-                    targetValue = 1f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(300, easing = FastOutSlowInEasing),
-                        repeatMode = RepeatMode.Reverse
-                    )
-                )
-            }
-        }
-    }
-
-    // Continuous rotation for rings
-    LaunchedEffect(Unit) {
-        launch {
-            ring1Angle.animateTo(
-                targetValue = 360f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(6000, easing = androidx.compose.animation.core.LinearEasing),
-                    repeatMode = RepeatMode.Restart
-                )
-            )
-        }
-        launch {
-            ring2Angle.animateTo(
-                targetValue = 360f + 120f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(7000, easing = androidx.compose.animation.core.LinearEasing),
-                    repeatMode = RepeatMode.Restart
-                )
-            )
-        }
-        launch {
-            ring3Angle.animateTo(
-                targetValue = 360f + 240f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(5500, easing = androidx.compose.animation.core.LinearEasing),
-                    repeatMode = RepeatMode.Restart
-                )
-            )
-        }
-        launch {
-            ring4Angle.animateTo(
-                targetValue = -360f + 45f, // reverse rotation
-                animationSpec = infiniteRepeatable(
-                    animation = tween(8000, easing = androidx.compose.animation.core.LinearEasing),
-                    repeatMode = RepeatMode.Restart
-                )
-            )
-        }
-    }
-
-    Box(
-        modifier = Modifier.size(280.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val baseRadius = size.minDimension / 4f
-            val currentRadius = baseRadius * radiusScale.value
-            
-            // Core colors based on state
-            val coreInnerColor = when (state) {
-                ZoyaState.IDLE -> Color(0xFF80D8FF)
-                ZoyaState.LISTENING -> Color(0xFFB388FF)
-                ZoyaState.THINKING -> Color(0xFFFFD180)
-                ZoyaState.SPEAKING -> Color(0xFF69F0AE)
-                else -> Color.LightGray
-            }
-            
-            val coreOuterColor = when (state) {
-                ZoyaState.IDLE -> Color(0xFF00B0FF)
-                ZoyaState.LISTENING -> Color(0xFF651FFF)
-                ZoyaState.THINKING -> Color(0xFFFF9100)
-                ZoyaState.SPEAKING -> Color(0xFF00E676)
-                else -> Color.Gray
-            }
-
-            // 1. Ambient Background Glow
-            drawCircle(
-                brush = androidx.compose.ui.graphics.Brush.radialGradient(
-                    colors = listOf(coreOuterColor.copy(alpha = glowAlpha.value * 0.5f), Color.Transparent),
-                    center = center,
-                    radius = currentRadius * 2.5f
-                ),
-                radius = currentRadius * 2.5f
-            )
-
-            // 2. The Glass Sphere (Core)
-            drawCircle(
-                brush = androidx.compose.ui.graphics.Brush.radialGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = 0.9f),
-                        coreInnerColor.copy(alpha = 0.8f),
-                        coreOuterColor.copy(alpha = 0.9f),
-                        Color.Black.copy(alpha = 0.5f)
-                    ),
-                    center = androidx.compose.ui.geometry.Offset(center.x - currentRadius * 0.3f, center.y - currentRadius * 0.3f),
-                    radius = currentRadius * 1.2f
-                ),
-                radius = currentRadius
-            )
-            
-            // Inner Core Highlight for 3D effect
-            drawCircle(
-                color = Color.White.copy(alpha = 0.4f),
-                center = androidx.compose.ui.geometry.Offset(center.x - currentRadius * 0.4f, center.y - currentRadius * 0.4f),
-                radius = currentRadius * 0.3f
-            )
-
-            // 3. Neon Orbital Rings
-            val ringRadiusX = currentRadius * 1.8f
-            val ringRadiusY = currentRadius * 0.6f
-            
-            // Helper function to draw a 3D-ish ring
-            fun drawNeonRing(angle: Float, startColor: Color, endColor: Color, strokeWidth: Float) {
-                rotate(angle, center) {
-                    drawOval(
-                        brush = androidx.compose.ui.graphics.Brush.sweepGradient(
-                            colors = listOf(startColor, endColor, startColor, Color.Transparent, startColor),
-                            center = center
-                        ),
-                        topLeft = androidx.compose.ui.geometry.Offset(center.x - ringRadiusX, center.y - ringRadiusY),
-                        size = androidx.compose.ui.geometry.Size(ringRadiusX * 2, ringRadiusY * 2),
-                        style = Stroke(width = strokeWidth)
-                    )
-                    // Glow for the ring
-                    drawOval(
-                        color = startColor.copy(alpha = 0.3f),
-                        topLeft = androidx.compose.ui.geometry.Offset(center.x - ringRadiusX, center.y - ringRadiusY),
-                        size = androidx.compose.ui.geometry.Size(ringRadiusX * 2, ringRadiusY * 2),
-                        style = Stroke(width = strokeWidth * 3)
-                    )
-                }
-            }
-
-            // Draw Rings
-            val speedMultiplier = if (state == ZoyaState.THINKING || state == ZoyaState.SPEAKING) 2f else 1f
-            
-            // Red/Pink Ring
-            drawNeonRing(ring1Angle.value * speedMultiplier, Color(0xFFFF1744), Color(0xFFD50000), 4f)
-            
-            // Green/Yellow Ring
-            drawNeonRing(ring2Angle.value * speedMultiplier, Color(0xFF00E676), Color(0xFF76FF03), 4f)
-            
-            // Blue/Cyan Ring
-            drawNeonRing(ring3Angle.value * speedMultiplier, Color(0xFF00E5FF), Color(0xFF2979FF), 4f)
-            
-            // Outer subtle glass ring
-            drawNeonRing(ring4Angle.value * speedMultiplier, Color.White.copy(alpha = 0.5f), Color.White.copy(alpha = 0.1f), 2f)
-            
-            // 4. Outer Glass Dome Reflection
-            drawCircle(
-                brush = androidx.compose.ui.graphics.Brush.radialGradient(
-                    colors = listOf(Color.Transparent, Color.White.copy(alpha = 0.15f), Color.White.copy(alpha = 0.3f)),
-                    center = center,
-                    radius = currentRadius * 2.2f
-                ),
-                radius = currentRadius * 2.2f,
-                style = Stroke(width = 2f)
-            )
-        }
     }
 }
 
 @Composable
 fun ChatScreen(onNavigateBack: () -> Unit) {
-    val context = LocalContext.current
-    val liveSessionManager = ZoyaForegroundService.activeService?.liveSessionManager
-    val messages = liveSessionManager?.messages?.collectAsState(initial = emptyList())?.value ?: emptyList()
-
-    androidx.compose.material3.Scaffold(
-        containerColor = Color(0xFF1E1E2E),
+    Scaffold(
+        containerColor = Color(0xFF08090F),
         topBar = {
-            androidx.compose.foundation.layout.Row(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                androidx.compose.material3.Button(
+                IconButton(
                     onClick = onNavigateBack,
-                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color(0xFF80D8FF)),
-                    shape = RoundedCornerShape(16.dp)
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.White.copy(alpha = 0.08f))
                 ) {
-                    Text("Back", color = Color.Black)
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = Color.White
+                    )
                 }
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = "Live Activity Stream",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
             }
         }
     ) { paddingValues ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
                 .padding(16.dp)
         ) {
-            Text(
-                text = "State: ${ZoyaForegroundService.currentState.name}",
-                color = Color(0xFF00E5FF),
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.padding(bottom = 16.dp)
-            )
-
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(messages) { message ->
-                    Text(
-                        text = message,
-                        color = Color.White.copy(alpha = 0.9f),
-                        fontSize = 16.sp
-                    )
+            TerminalView(
+                state = ZoyaForegroundService.currentState,
+                onSendMessage = { text ->
+                    ZoyaForegroundService.activeService?.sendTextMessage(text)
+                },
+                onReconnect = {
+                    ZoyaForegroundService.activeService?.reconnectSession()
                 }
-            }
-            
-            Spacer(modifier = Modifier.height(16.dp))
-
-            androidx.compose.material3.Button(
-                onClick = { ZoyaForegroundService.activeService?.reconnectSession() },
-                colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color(0xFF80D8FF)),
-                shape = RoundedCornerShape(24.dp)
-            ) {
-                Text("Reconnect", color = Color.Black)
-            }
+            )
         }
     }
 }

@@ -125,86 +125,111 @@ class ToolExecutionEngine(private val context: Context) {
     }
 
     private fun callContact(nameOrNumber: String, useDialer: Boolean = false, simSlot: Int? = null): String {
-        if (nameOrNumber == "121" || nameOrNumber == "*121#") {
+        val trimmed = nameOrNumber.trim()
+        if (trimmed == "121" || trimmed == "*121#") {
             return "ERROR: You tried to call 121 instead of using the contact name. DO NOT invent numbers. Use the contact name provided by the user (e.g. 'Rohit')."
         }
 
-        val isNumber = nameOrNumber.count { it.isDigit() } >= 7 || nameOrNumber.matches(Regex("^[0-9+\\-*#]+$"))
+        val digits = trimmed.filter { it.isDigit() }
+        val isNumber = digits.length >= 3 && trimmed.all { it.isDigit() || it in "+- *#()/" }
         
-        val number = if (isNumber) {
-            nameOrNumber.replace(Regex("[^0-9+*#]"), "")
+        val rawNumber = if (isNumber) {
+            trimmed
         } else {
-            val matches = findContacts(nameOrNumber)
-            if (matches.isEmpty()) return "Could not find a phone number for '$nameOrNumber'. Please ask the user for the correct name."
+            val matches = findContacts(trimmed)
+            if (matches.isEmpty()) return "Could not find a phone number for '$trimmed'. Please ask the user for the correct name."
             matches.first().second
         }
+        val number = rawNumber.replace(Regex("[^0-9+*#]"), "")
 
-        val action = if (useDialer) Intent.ACTION_DIAL else Intent.ACTION_CALL
-        val callIntent = Intent(action)
-        callIntent.data = Uri.parse("tel:$number")
-        callIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val hasCallPermission = context.checkSelfPermission(android.Manifest.permission.CALL_PHONE) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val shouldDial = useDialer || !hasCallPermission
+        val action = if (shouldDial) Intent.ACTION_DIAL else Intent.ACTION_CALL
+        val callIntent = Intent(action).apply {
+            data = Uri.parse("tel:$number")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
         
-        if (!useDialer && simSlot != null) {
+        if (!shouldDial && simSlot != null) {
             try {
-                // Common extras for sim selection
-                val slotIndex = simSlot - 1
+                val slotIndex = (simSlot - 1).coerceAtLeast(0)
                 callIntent.putExtra("com.android.phone.force.slot", true)
                 callIntent.putExtra("com.android.phone.extra.slot", slotIndex)
-                callIntent.putExtra("simSlot", slotIndex) // For some samsung / older models
+                callIntent.putExtra("simSlot", slotIndex)
                 
-                // For modern android versions, use TelecomManager
                 if (context.checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                    val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as android.telecom.TelecomManager
-                    val phoneAccounts = telecomManager.callCapablePhoneAccounts
-                    if (slotIndex in 0 until phoneAccounts.size) {
+                    val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? android.telecom.TelecomManager
+                    val phoneAccounts = telecomManager?.callCapablePhoneAccounts
+                    if (phoneAccounts != null && slotIndex in phoneAccounts.indices) {
                         callIntent.putExtra(android.telecom.TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, phoneAccounts[slotIndex])
                     }
                 }
             } catch (e: Exception) {
-                // Ignore exceptions with telecom manager
+                // Telecom manager extras are best-effort
             }
         }
         
-        try {
+        return try {
             context.startActivity(callIntent)
-            return if (useDialer) "Opened dialer for $nameOrNumber ($number)" else "Calling $nameOrNumber ($number) via SIM $simSlot..."
-        } catch (e: SecurityException) {
-            return "Missing CALL_PHONE permission."
+            if (shouldDial) "Opened dialer for $trimmed ($number)" else "Calling $trimmed ($number) via SIM $simSlot..."
+        } catch (e: Exception) {
+            if (!shouldDial) {
+                // Fallback to dialer if direct call failed (e.g. background call limits or security exception)
+                try {
+                    val fallbackIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$number")).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(fallbackIntent)
+                    "Opened dialer for $trimmed ($number) as direct call was restricted."
+                } catch (dialEx: Exception) {
+                    "Failed to start call or dialer: ${dialEx.message}"
+                }
+            } else {
+                "Failed to open dialer: ${e.message}"
+            }
         }
     }
 
     private fun sendWhatsApp(nameOrNumber: String, message: String): String {
-        if (nameOrNumber == "121" || nameOrNumber == "*121#") {
+        val trimmed = nameOrNumber.trim()
+        if (trimmed == "121" || trimmed == "*121#") {
             return "ERROR: You tried to use 121 instead of the contact name. DO NOT invent numbers. Use the exact contact name provided by the user."
         }
 
-        val isNumber = nameOrNumber.count { it.isDigit() } >= 7 || nameOrNumber.matches(Regex("^[0-9+\\-*#]+$"))
+        val digits = trimmed.filter { it.isDigit() }
+        val isNumber = digits.length >= 3 && trimmed.all { it.isDigit() || it in "+- *#()/" }
         
         val number = if (isNumber) {
-            nameOrNumber
+            trimmed
         } else {
-            val matches = findContacts(nameOrNumber)
-            if (matches.isEmpty()) return "Could not find a phone number for '$nameOrNumber'. Please ask the user for the correct name."
+            val matches = findContacts(trimmed)
+            if (matches.isEmpty()) return "Could not find a phone number for '$trimmed'. Please ask the user for the correct name."
             matches.first().second
         }
         
-        // WhatsApp URLs formatting: numbers should typically not have spaces or +. 
-        // We'll strip non-digits. (Country code may be required, assume it's attached or it will just try to prompt a chat)
         val cleanNumber = number.replace(Regex("[^0-9+]"), "")
-        
         val url = "https://api.whatsapp.com/send?phone=$cleanNumber&text=${Uri.encode(message)}"
-        val intent = Intent(Intent.ACTION_VIEW)
-        intent.data = Uri.parse(url)
-        intent.setPackage("com.whatsapp")
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         
-        try {
+        return try {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                setPackage("com.whatsapp")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
             com.example.accessibility.ZoyaAccessibilityService.shouldAutoClick = true
             context.startActivity(intent)
-            return "I am automatically sending the WhatsApp message to $nameOrNumber."
-        } catch(e: Exception) {
-             com.example.accessibility.ZoyaAccessibilityService.shouldAutoClick = false
-             return "WhatsApp may not be installed."
+            "I am automatically sending the WhatsApp message to $trimmed."
+        } catch (e: Exception) {
+            try {
+                // Fallback to any app that can handle WhatsApp web link (e.g., WhatsApp Business or browser)
+                val fallbackIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(fallbackIntent)
+                "Opened WhatsApp link for $trimmed."
+            } catch (fallbackEx: Exception) {
+                com.example.accessibility.ZoyaAccessibilityService.shouldAutoClick = false
+                "WhatsApp is not installed on this device."
+            }
         }
     }
 
@@ -280,14 +305,14 @@ class ToolExecutionEngine(private val context: Context) {
                 val containsMatches = mutableListOf<Pair<String, String>>()
                 val fuzzyMatches = mutableListOf<Pair<Int, Pair<String, String>>>()
                 
-                val cleanPattern = namePattern.lowercase().replace(Regex("[^a-z0-9 ]"), "").trim()
+                val cleanPattern = namePattern.lowercase().replace(Regex("[\\p{Punct}]"), " ").replace(Regex("\\s+"), " ").trim()
                 val searchWords = cleanPattern.split(" ").filter { it.isNotEmpty() }
 
                 while (cursor.moveToNext()) {
                     val contactName = cursor.getString(nameIdx) ?: continue
                     val contactNum = cursor.getString(numIdx) ?: continue
                     
-                    val cleanContactName = contactName.lowercase().replace(Regex("[^a-z0-9 ]"), "").trim()
+                    val cleanContactName = contactName.lowercase().replace(Regex("[\\p{Punct}]"), " ").replace(Regex("\\s+"), " ").trim()
                     
                     if (cleanContactName.isEmpty()) continue
 
@@ -354,38 +379,37 @@ class ToolExecutionEngine(private val context: Context) {
                 else -> return "Unknown volume direction. Use up, down, mute, or max."
             }
         } catch (e: Exception) {
-            return "Failed to adjust volume: \${e.message}"
+            return "Failed to adjust volume: ${e.message}"
         }
     }
 
     private fun toggleTorch(state: String): String {
         try {
             val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
-            val cameraId = cameraManager.cameraIdList[0]
-            if (state.lowercase() == "on") {
-                cameraManager.setTorchMode(cameraId, true)
-                return "Torch turned on"
-            } else {
-                cameraManager.setTorchMode(cameraId, false)
-                return "Torch turned off"
-            }
+            val cameraIds = cameraManager.cameraIdList
+            if (cameraIds.isEmpty()) return "Flashlight not supported on this device."
+            val cameraId = cameraIds[0]
+            val isOn = state.lowercase() == "on"
+            cameraManager.setTorchMode(cameraId, isOn)
+            return if (isOn) "Torch turned on" else "Torch turned off"
         } catch (e: Exception) {
-            return "Failed to toggle torch: \${e.message}"
+            return "Failed to toggle torch: ${e.message}"
         }
     }
 
     private fun setBrightness(level: Int): String {
         try {
             if (!android.provider.Settings.System.canWrite(context)) {
-                val intent = Intent(android.provider.Settings.ACTION_MANAGE_WRITE_SETTINGS)
-                intent.data = android.net.Uri.parse("package:" + context.packageName)
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                val intent = Intent(android.provider.Settings.ACTION_MANAGE_WRITE_SETTINGS).apply {
+                    data = android.net.Uri.parse("package:" + context.packageName)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
                 context.startActivity(intent)
                 return "Prompted user for write settings permission to change brightness. Please try again after permission is granted."
             }
             
-            // Level is 0-100, normalize to 0-255
-            val brightness = (level * 255) / 100
+            val clampedLevel = level.coerceIn(0, 100)
+            val brightness = (clampedLevel * 255) / 100
             android.provider.Settings.System.putInt(
                 context.contentResolver,
                 android.provider.Settings.System.SCREEN_BRIGHTNESS_MODE,
@@ -396,35 +420,37 @@ class ToolExecutionEngine(private val context: Context) {
                 android.provider.Settings.System.SCREEN_BRIGHTNESS,
                 brightness
             )
-            return "Brightness set to $level%"
+            return "Brightness set to $clampedLevel%"
         } catch (e: Exception) {
-            return "Failed to set brightness: \${e.message}"
+            return "Failed to set brightness: ${e.message}"
         }
     }
 
     private fun playMedia(query: String): String {
         try {
-            val intent = Intent(android.provider.MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH)
-            intent.putExtra(android.app.SearchManager.QUERY, query)
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val intent = Intent(android.provider.MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
+                putExtra(android.app.SearchManager.QUERY, query)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
             context.startActivity(intent)
             return "Started playing media for query: $query"
         } catch (e: Exception) {
-            return "Failed to play media (no suitable app found): \${e.message}"
+            return "Failed to play media (no suitable app found): ${e.message}"
         }
     }
 
     private fun setVolumePercent(percent: Int): String {
         try {
             val ctx = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) context.createAttributionContext("zoya_audio") else context
-        val audioManager = ctx.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+            val audioManager = ctx.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
             val streamType = android.media.AudioManager.STREAM_MUSIC
             val maxVol = audioManager.getStreamMaxVolume(streamType)
-            val targetVol = (maxVol * Math.max(0, Math.min(100, percent))) / 100
+            val clamped = percent.coerceIn(0, 100)
+            val targetVol = (maxVol * clamped) / 100
             audioManager.setStreamVolume(streamType, targetVol, android.media.AudioManager.FLAG_SHOW_UI)
-            return "Volume set to $percent%"
+            return "Volume set to $clamped%"
         } catch (e: Exception) {
-            return "Failed to set volume: \${e.message}"
+            return "Failed to set volume: ${e.message}"
         }
     }
 
@@ -442,7 +468,7 @@ class ToolExecutionEngine(private val context: Context) {
                 return "Accessibility service not running. Enable Zoya Automation in Settings > Accessibility."
             }
         } catch (e: Exception) {
-            return "Error opening notification panel: \${e.message}"
+            return "Error opening notification panel: ${e.message}"
         }
     }
 
@@ -453,9 +479,9 @@ class ToolExecutionEngine(private val context: Context) {
         try {
             val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as android.telecom.TelecomManager
             val phoneAccounts = telecomManager.callCapablePhoneAccounts
-            return "The device has \${phoneAccounts.size} active calling SIM cards."
+            return "The device has ${phoneAccounts.size} active calling SIM cards."
         } catch (e: Exception) {
-            return "Error determining SIM cards: \${e.message}. Proceed assuming 1 SIM."
+            return "Error determining SIM cards: ${e.message}. Proceed assuming 1 SIM."
         }
     }
 }

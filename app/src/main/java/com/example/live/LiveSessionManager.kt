@@ -246,15 +246,14 @@ class LiveSessionManager(
         if (webSocket != null) return
         
         val prefs = context.getSharedPreferences("ZoyaPrefs", android.content.Context.MODE_PRIVATE)
-        val apiKey = prefs.getString("api_key", "") ?: ""
-        if (apiKey.isEmpty()) {
-            addMessage("Error: API Key is missing. Please set it in Settings.")
-            _zoyaState.value = ZoyaState.IDLE
-            return
+        var apiKey = prefs.getString("api_key", "")?.trim() ?: ""
+        if (apiKey.isEmpty() && BuildConfig.GEMINI_API_KEY.isNotEmpty() && BuildConfig.GEMINI_API_KEY != "MY_GEMINI_API_KEY") {
+            apiKey = BuildConfig.GEMINI_API_KEY.trim()
         }
-        if (apiKey.isEmpty() || apiKey == "YOUR_API_KEY") {
+        if (apiKey.isEmpty() || apiKey == "YOUR_API_KEY" || apiKey == "MY_GEMINI_API_KEY") {
             Log.e("ZoyaDiagnostic", "No API Key found")
-            addMessage("Error: Gemini API Key is missing. Please add it to the Secrets tab.")
+            addMessage("Error: Gemini API Key is missing. Please set it in Settings.")
+            _zoyaState.value = ZoyaState.IDLE
             return
         }
         
@@ -283,7 +282,7 @@ class LiveSessionManager(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                val errorBody = response?.body?.string() ?: "No body"
+                val errorBody = try { response?.body?.string() ?: "No body" } catch (e: Exception) { "Could not read response: ${e.message}" }
                 Log.e("ZoyaDiagnostic", "WebSocket ERROR: ${t.message}, Response: $errorBody", t)
                 addMessage("WebSocket Error: ${t.message}. Details: $errorBody")
                 _zoyaState.value = ZoyaState.IDLE
@@ -320,6 +319,15 @@ class LiveSessionManager(
 
     private fun addMessage(msg: String) {
         _messages.value = _messages.value + msg
+    }
+
+    fun clearMessages() {
+        _messages.value = emptyList()
+    }
+
+    fun reconnect() {
+        stopSession()
+        startSession()
     }
 
     fun stopSession() {
@@ -380,7 +388,7 @@ class LiveSessionManager(
     private fun sendSetupMessage(ws: WebSocket) {
         val setupMsg = buildJsonObject {
             putJsonObject("setup") {
-                put("model", "models/gemini-2.5-flash-native-audio-latest")
+                put("model", "models/gemini-2.5-flash-native-audio-preview-12-2025")
                 putJsonObject("generationConfig") {
                     putJsonArray("responseModalities") { add("AUDIO") }
                     putJsonObject("speechConfig") {
@@ -412,9 +420,16 @@ class LiveSessionManager(
         Log.d("LiveSessionManager", "Server msg: $text")
         try {
             val jsonMsg = json.parseToJsonElement(text).jsonObject
-            // DEBUUGING: show keys on UI
+            // Show keys on UI log
             addMessage("Server says: ${jsonMsg.keys}")
             
+            if (jsonMsg.containsKey("error")) {
+                val errorObj = jsonMsg["error"]?.jsonObject
+                val errorMsg = errorObj?.get("message")?.jsonPrimitive?.content ?: jsonMsg["error"].toString()
+                Log.e("ZoyaDiagnostic", "Gemini Live Error: $errorMsg")
+                addMessage("Server Error: $errorMsg")
+            }
+
             if (jsonMsg.containsKey("setupComplete")) {
                 isSetupComplete = true
                 addMessage("Server says: Setup Complete")
@@ -448,7 +463,8 @@ class LiveSessionManager(
                     }
                 }
                 
-                if (serverContent?.containsKey("turnComplete") == true && serverContent["turnComplete"]?.jsonPrimitive?.content == "true") {
+                val turnCompletePrimitive = serverContent?.get("turnComplete")?.jsonPrimitive
+                if (turnCompletePrimitive?.content == "true" || turnCompletePrimitive?.booleanOrNull == true) {
                     _zoyaState.value = ZoyaState.LISTENING
                 }
             }

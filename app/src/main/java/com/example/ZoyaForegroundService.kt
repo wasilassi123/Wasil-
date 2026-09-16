@@ -236,11 +236,12 @@ class ZoyaForegroundService : Service() {
                             processAudio(audioBuffer, readResult)
                         } else {
                             Log.e("ZoyaDiagnostic", "Microphone read failed or empty: $readResult")
+                            delay(50)
                         }
                     } catch (e: Exception) {
                         Log.e("ZoyaDiagnostic", "Error reading audio", e)
+                        delay(50)
                     }
-                    // No delay needed here as audioRecord?.read is blocking
                 }
                 Log.i("ZoyaDiagnostic", "Microphone loop stopped.")
             }
@@ -259,23 +260,6 @@ class ZoyaForegroundService : Service() {
             // Send data to Gemini Live if session is active 
             // (Even when speaking, to capture interruptions)
             liveSessionManager.sendAudioData(buffer, length)
-
-            if (state == ZoyaState.SPEAKING) {
-                // Determine if user is speaking to interrupt
-                var sum = 0L
-                for (i in 0 until length) {
-                    sum += abs(buffer[i].toLong())
-                }
-                val avg = if (length > 0) sum / length else 0
-                // We let Gemini Live API handle interruptions natively by sending audio.
-            }
-        } else {
-            // Reconnect if it disconnected unexpectedly
-            val now = System.currentTimeMillis()
-            if (now - lastFlushTime > 3000) {
-                lastFlushTime = now
-                liveSessionManager.startSession()
-            }
         }
     }
 
@@ -296,7 +280,7 @@ class ZoyaForegroundService : Service() {
     }
 
     fun reconnectSession() {
-        liveSessionManager.startSession()
+        liveSessionManager.reconnect()
     }
 
     override fun onDestroy() {
