@@ -17,6 +17,8 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.example.live.LiveSessionManager
 import com.example.live.ZoyaState
+import com.example.offline.NetworkMonitor
+import com.example.offline.OfflineAssistantManager
 import com.example.tools.ToolExecutionEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +29,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
+enum class AssistantMode {
+    AUTO,
+    OFFLINE,
+    ONLINE
+}
+
 class ZoyaForegroundService : Service() {
 
     private val job = Job()
@@ -36,6 +44,8 @@ class ZoyaForegroundService : Service() {
     private var audioTrack: AudioTrack? = null
 
     lateinit var liveSessionManager: LiveSessionManager
+    lateinit var offlineAssistantManager: OfflineAssistantManager
+    private lateinit var networkMonitor: NetworkMonitor
     private lateinit var toolEngine: ToolExecutionEngine
 
     private var isRecording = false
@@ -59,6 +69,12 @@ class ZoyaForegroundService : Service() {
         private val _messages = kotlinx.coroutines.flow.MutableStateFlow<List<String>>(emptyList())
         val messages: kotlinx.coroutines.flow.StateFlow<List<String>> = _messages.asStateFlow()
 
+        private val _assistantMode = kotlinx.coroutines.flow.MutableStateFlow(AssistantMode.AUTO)
+        val assistantMode: kotlinx.coroutines.flow.StateFlow<AssistantMode> = _assistantMode.asStateFlow()
+
+        private val _isOfflineModeActive = kotlinx.coroutines.flow.MutableStateFlow(false)
+        val isOfflineModeActive: kotlinx.coroutines.flow.StateFlow<Boolean> = _isOfflineModeActive.asStateFlow()
+
         // Provide a way to send message from UI to active service if it exists
         var activeService: ZoyaForegroundService? = null
     }
@@ -68,6 +84,7 @@ class ZoyaForegroundService : Service() {
         try {
             activeService = this
             toolEngine = ToolExecutionEngine(this)
+            networkMonitor = NetworkMonitor(this)
             
             val onAudioOut: (ByteArray) -> Unit = { audioData ->
                 playAudio(audioData)
@@ -87,6 +104,29 @@ class ZoyaForegroundService : Service() {
             }
             
             liveSessionManager = LiveSessionManager(this, toolEngine, onAudioOut, onInterruptOut)
+            
+            offlineAssistantManager = OfflineAssistantManager(
+                context = this,
+                toolEngine = toolEngine,
+                onMessageLog = { msg ->
+                    liveSessionManager.addMessage(msg)
+                },
+                onStateChanged = { state ->
+                    if (_isOfflineModeActive.value) {
+                        currentState = state
+                        onStateChange?.invoke(state)
+                    }
+                }
+            )
+
+            liveSessionManager.onConnectionFailed = {
+                if (_assistantMode.value == AssistantMode.AUTO) {
+                    scope.launch(Dispatchers.Main) {
+                        liveSessionManager.addMessage("[Auto-Fallback] Switched to On-Device Offline Mode.")
+                        switchToOffline()
+                    }
+                }
+            }
 
             createNotificationChannel()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -101,8 +141,10 @@ class ZoyaForegroundService : Service() {
 
             scope.launch {
                 liveSessionManager.zoyaState.collect { state ->
-                    currentState = state
-                    onStateChange?.invoke(state)
+                    if (!_isOfflineModeActive.value) {
+                        currentState = state
+                        onStateChange?.invoke(state)
+                    }
                 }
             }
             scope.launch {
@@ -111,9 +153,30 @@ class ZoyaForegroundService : Service() {
                 }
             }
 
+            scope.launch {
+                networkMonitor.isOnline.collect { online ->
+                    if (_assistantMode.value == AssistantMode.AUTO) {
+                        if (online && _isOfflineModeActive.value) {
+                            liveSessionManager.addMessage("[Network Restored] Switching to Cloud AI.")
+                            switchToOnline()
+                        } else if (!online && !_isOfflineModeActive.value) {
+                            liveSessionManager.addMessage("[Network Lost] Switching to On-Device Offline Mode.")
+                            switchToOffline()
+                        }
+                    }
+                }
+            }
+
             initAudioTrack()
-            startMicrophoneLoop()
-            liveSessionManager.startSession()
+            
+            val shouldStartOffline = _assistantMode.value == AssistantMode.OFFLINE ||
+                    (_assistantMode.value == AssistantMode.AUTO && !networkMonitor.isOnline.value)
+            
+            if (shouldStartOffline) {
+                switchToOffline()
+            } else {
+                switchToOnline()
+            }
         } catch (e: Exception) {
             Log.e("ZoyaService", "Error in onCreate", e)
         }
@@ -180,6 +243,8 @@ class ZoyaForegroundService : Service() {
     }
 
     private fun startMicrophoneLoop() {
+        if (isRecording && audioRecord != null) return
+
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             Log.e("ZoyaDiagnostic", "Missing RECORD_AUDIO permission")
             return
@@ -209,8 +274,6 @@ class ZoyaForegroundService : Service() {
                 .setBufferSizeInBytes(finalBuf)
                 .build()
 
-
-
             if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
                 Log.e("ZoyaDiagnostic", "AudioRecord initialization failed!")
                 return
@@ -220,8 +283,6 @@ class ZoyaForegroundService : Service() {
             isRecording = true
 
             scope.launch(Dispatchers.IO) {
-                // Use a smaller fixed chunk size instead of the large buffer for reading
-                // 100ms of audio at 16kHz is 1600 samples
                 val chunkSize = 1600
                 val audioBuffer = ShortArray(chunkSize)
                 var readCount = 0
@@ -250,15 +311,66 @@ class ZoyaForegroundService : Service() {
         }
     }
 
+    private fun pauseMicrophoneLoop() {
+        isRecording = false
+        try {
+            audioRecord?.stop()
+            audioRecord?.release()
+            audioRecord = null
+        } catch (e: Exception) {
+            Log.e("ZoyaDiagnostic", "Error pausing microphone", e)
+        }
+    }
+
+    fun setMode(mode: AssistantMode) {
+        _assistantMode.value = mode
+        when (mode) {
+            AssistantMode.OFFLINE -> {
+                switchToOffline()
+            }
+            AssistantMode.ONLINE -> {
+                switchToOnline()
+            }
+            AssistantMode.AUTO -> {
+                if (networkMonitor.isOnline.value) {
+                    switchToOnline()
+                } else {
+                    switchToOffline()
+                }
+            }
+        }
+    }
+
+    fun switchToOffline() {
+        _isOfflineModeActive.value = true
+        liveSessionManager.stopSession()
+        pauseMicrophoneLoop()
+        offlineAssistantManager.startOfflineAssistant()
+        updateNotification("X (Offline Mode)", "On-device AI assistant active.")
+    }
+
+    fun switchToOnline() {
+        _isOfflineModeActive.value = false
+        offlineAssistantManager.stopOfflineAssistant()
+        startMicrophoneLoop()
+        liveSessionManager.startSession()
+        updateNotification("X (Online Mode)", "Voice uplink active.")
+    }
+
+    fun triggerListening() {
+        if (_isOfflineModeActive.value) {
+            offlineAssistantManager.startListening()
+        }
+    }
+
     private var consecutiveLoudChunks = 0
     private var lastFlushTime = 0L
 
     private fun processAudio(buffer: ShortArray, length: Int) {
+        if (_isOfflineModeActive.value) return
         val state = liveSessionManager.zoyaState.value
         
         if (state != ZoyaState.IDLE) {
-            // Send data to Gemini Live if session is active 
-            // (Even when speaking, to capture interruptions)
             liveSessionManager.sendAudioData(buffer, length)
         }
     }
@@ -276,11 +388,20 @@ class ZoyaForegroundService : Service() {
     }
 
     fun sendTextMessage(text: String) {
-        liveSessionManager.sendTextMessage(text)
+        if (_isOfflineModeActive.value) {
+            offlineAssistantManager.executeTextCommand(text)
+        } else {
+            liveSessionManager.sendTextMessage(text)
+        }
     }
 
     fun reconnectSession() {
-        liveSessionManager.reconnect()
+        if (_isOfflineModeActive.value) {
+            offlineAssistantManager.stopOfflineAssistant()
+            offlineAssistantManager.startOfflineAssistant()
+        } else {
+            liveSessionManager.reconnect()
+        }
     }
 
     override fun onDestroy() {
@@ -291,6 +412,8 @@ class ZoyaForegroundService : Service() {
         currentState = ZoyaState.IDLE
         onStateChange?.invoke(currentState)
         audioOutputQueue.clear()
+        try { networkMonitor.unregister() } catch (e: Exception) {}
+        try { offlineAssistantManager.release() } catch (e: Exception) {}
         try { audioRecord?.stop() } catch (e: Exception) {}
         try { audioRecord?.release() } catch (e: Exception) {}
         try { audioTrack?.stop() } catch (e: Exception) {}
@@ -312,11 +435,28 @@ class ZoyaForegroundService : Service() {
     }
 
     private fun createNotification(): Notification {
+        val title = if (_isOfflineModeActive.value) "X (Offline Mode)" else "X is listening..."
+        val content = if (_isOfflineModeActive.value) "On-device AI assistant active." else "Background assistant active."
         return NotificationCompat.Builder(this, "ZOYA_CHANNEL")
-            .setContentTitle("X is listening...")
-            .setContentText("Background assistant active.")
+            .setContentTitle(title)
+            .setContentText(content)
             .setSmallIcon(R.mipmap.ic_launcher_round)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
+    }
+
+    private fun updateNotification(title: String, text: String) {
+        try {
+            val manager = getSystemService(NotificationManager::class.java)
+            val notif = NotificationCompat.Builder(this, "ZOYA_CHANNEL")
+                .setContentTitle(title)
+                .setContentText(text)
+                .setSmallIcon(R.mipmap.ic_launcher_round)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .build()
+            manager?.notify(1, notif)
+        } catch (e: Exception) {
+            // Ignore
+        }
     }
 }

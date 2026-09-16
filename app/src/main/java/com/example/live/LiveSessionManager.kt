@@ -32,7 +32,8 @@ class LiveSessionManager(
     private val context: Context,
     private val toolEngine: ToolExecutionEngine,
     private val onAudioOut: (ByteArray) -> Unit,
-    private val onInterrupt: () -> Unit = {}
+    private val onInterrupt: () -> Unit = {},
+    var onConnectionFailed: (() -> Unit)? = null
 ) {
     private val _zoyaState = MutableStateFlow(ZoyaState.IDLE)
     val zoyaState: StateFlow<ZoyaState> = _zoyaState.asStateFlow()
@@ -252,8 +253,9 @@ class LiveSessionManager(
         }
         if (apiKey.isEmpty() || apiKey == "YOUR_API_KEY" || apiKey == "MY_GEMINI_API_KEY") {
             Log.e("ZoyaDiagnostic", "No API Key found")
-            addMessage("Error: Gemini API Key is missing. Please set it in Settings.")
+            addMessage("Notice: Gemini API Key not found. Falling back to On-Device Offline Mode.")
             _zoyaState.value = ZoyaState.IDLE
+            onConnectionFailed?.invoke()
             return
         }
         
@@ -264,7 +266,7 @@ class LiveSessionManager(
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.i("ZoyaDiagnostic", "WebSocket connection OPENED successfully.")
-                addMessage("WebSocket Opened")
+                addMessage("WebSocket Opened (Online Live)")
                 isSetupComplete = false
                 sendSetupMessage(webSocket)
                 _zoyaState.value = ZoyaState.LISTENING
@@ -284,9 +286,10 @@ class LiveSessionManager(
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 val errorBody = try { response?.body?.string() ?: "No body" } catch (e: Exception) { "Could not read response: ${e.message}" }
                 Log.e("ZoyaDiagnostic", "WebSocket ERROR: ${t.message}, Response: $errorBody", t)
-                addMessage("WebSocket Error: ${t.message}. Details: $errorBody")
+                addMessage("Network/Cloud Uplink Error: ${t.message}")
                 _zoyaState.value = ZoyaState.IDLE
                 this@LiveSessionManager.webSocket = null
+                onConnectionFailed?.invoke()
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -317,7 +320,7 @@ class LiveSessionManager(
         ws.send(msg.toString())
     }
 
-    private fun addMessage(msg: String) {
+    fun addMessage(msg: String) {
         _messages.value = _messages.value + msg
     }
 

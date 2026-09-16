@@ -34,6 +34,7 @@ import androidx.core.content.ContextCompat
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.example.AssistantMode
 import com.example.BuildConfig
 import com.example.ZoyaForegroundService
 import com.example.accessibility.ZoyaAccessibilityService
@@ -77,6 +78,9 @@ fun HomeScreen(onNavigateToChat: () -> Unit) {
     var zoyaState by remember { mutableStateOf(ZoyaForegroundService.currentState) }
     var serviceStarted by remember { mutableStateOf(ZoyaForegroundService.activeService != null) }
     var currentTab by remember { mutableStateOf(MainTab.CONSOLE) }
+
+    val currentAssistantMode by ZoyaForegroundService.assistantMode.collectAsState()
+    val isOfflineActive by ZoyaForegroundService.isOfflineModeActive.collectAsState()
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -150,8 +154,23 @@ fun HomeScreen(onNavigateToChat: () -> Unit) {
                                     modifier = Modifier
                                         .size(7.dp)
                                         .clip(CircleShape)
-                                        .background(stateColor)
+                                        .background(if (isOfflineActive) Color(0xFFFFB74D) else stateColor)
                                 )
+                                if (isOfflineActive) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = Color(0xFFFFB74D).copy(alpha = 0.2f),
+                                        border = BorderStroke(0.5.dp, Color(0xFFFFB74D).copy(alpha = 0.5f))
+                                    ) {
+                                        Text(
+                                            text = "OFFLINE",
+                                            color = Color(0xFFFFD180),
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                }
                             }
                             Text(
                                 text = "Created by Wasil",
@@ -308,6 +327,14 @@ fun HomeScreen(onNavigateToChat: () -> Unit) {
                             stateColor = stateColor,
                             apiKey = apiKey,
                             isAccessibilityActive = isAccessibilityActive,
+                            isOfflineMode = isOfflineActive,
+                            assistantMode = currentAssistantMode,
+                            onModeChange = { mode ->
+                                ZoyaForegroundService.activeService?.setMode(mode)
+                            },
+                            onOrbClick = {
+                                ZoyaForegroundService.activeService?.triggerListening()
+                            },
                             onOpenApiKeyDialog = { showApiKeyDialog = true },
                             onStartService = {
                                 val hasMic = ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -358,6 +385,7 @@ fun HomeScreen(onNavigateToChat: () -> Unit) {
                     MainTab.TERMINAL -> {
                         TerminalView(
                             state = zoyaState,
+                            isOffline = isOfflineActive,
                             onSendMessage = { text ->
                                 val service = ZoyaForegroundService.activeService
                                 if (service != null) {

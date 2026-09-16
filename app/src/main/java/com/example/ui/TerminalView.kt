@@ -35,6 +35,7 @@ import com.example.live.ZoyaState
 @Composable
 fun TerminalView(
     state: ZoyaState,
+    isOffline: Boolean = false,
     onSendMessage: (String) -> Unit,
     onReconnect: () -> Unit
 ) {
@@ -65,19 +66,19 @@ fun TerminalView(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    text = "NEURAL STREAM",
-                    color = Color(0xFF00E5FF),
+                    text = if (isOffline) "OFFLINE STREAM" else "NEURAL STREAM",
+                    color = if (isOffline) Color(0xFFFFB74D) else Color(0xFF00E5FF),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 1.5.sp
                 )
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFF00E5FF).copy(alpha = 0.15f)
+                    color = (if (isOffline) Color(0xFFFFB74D) else Color(0xFF00E5FF)).copy(alpha = 0.15f)
                 ) {
                     Text(
-                        text = "${messages.size} entries",
-                        color = Color(0xFF00E5FF),
+                        text = if (isOffline) "On-Device • ${messages.size}" else "${messages.size} entries",
+                        color = if (isOffline) Color(0xFFFFD180) else Color(0xFF00E5FF),
                         fontSize = 10.sp,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -134,12 +135,12 @@ fun TerminalView(
                         modifier = Modifier.size(48.dp)
                     )
                     Text(
-                        text = "Voice stream is silent",
+                        text = if (isOffline) "Offline Voice & Chat Ready" else "Voice stream is silent",
                         color = Color.White.copy(alpha = 0.4f),
                         fontSize = 14.sp
                     )
                     Text(
-                        text = "Speak aloud or type below to interact with X",
+                        text = if (isOffline) "Speak aloud or type to talk and control tools on-device" else "Speak aloud or type below to interact with X",
                         color = Color.White.copy(alpha = 0.25f),
                         fontSize = 12.sp
                     )
@@ -185,7 +186,7 @@ fun TerminalView(
                     onValueChange = { inputText = it },
                     placeholder = {
                         Text(
-                            "Type instruction or command...",
+                            if (isOffline) "Chat offline or command (e.g. Hello, Joke, Torch, Call)..." else "Type instruction or command...",
                             color = Color.White.copy(alpha = 0.4f),
                             fontSize = 14.sp
                         )
@@ -215,7 +216,7 @@ fun TerminalView(
                         .size(40.dp)
                         .clip(CircleShape)
                         .background(
-                            if (inputText.isNotBlank()) Color(0xFF00E5FF) else Color.White.copy(alpha = 0.08f)
+                            if (inputText.isNotBlank()) (if (isOffline) Color(0xFFFFB74D) else Color(0xFF00E5FF)) else Color.White.copy(alpha = 0.08f)
                         )
                 ) {
                     Icon(
@@ -236,13 +237,15 @@ fun TerminalMessageCard(
     rawMessage: String,
     onCopy: () -> Unit
 ) {
-    val isUser = rawMessage.startsWith("You:") || rawMessage.startsWith("user:")
+    val isUser = rawMessage.startsWith("You:") || rawMessage.startsWith("user:") || rawMessage.startsWith("You (Offline):")
+    val isOffline = rawMessage.startsWith("[Offline]") || rawMessage.contains("[Offline Mode") || rawMessage.contains("[Auto-Fallback]")
     val isTool = rawMessage.contains("functionResponses") || rawMessage.contains("Calling ") || rawMessage.contains("Opened dialer") || rawMessage.contains("Torch") || rawMessage.contains("Volume") || rawMessage.contains("Brightness")
     val isError = rawMessage.startsWith("Error:") || rawMessage.startsWith("WebSocket Error:") || rawMessage.contains("Missing")
 
     val cardColor = when {
         isUser -> Color(0xFF24143D)
         isError -> Color(0xFF3B151E)
+        isOffline -> Color(0xFF2A2012)
         isTool -> Color(0xFF14241C)
         else -> Color(0xFF131A2E)
     }
@@ -250,13 +253,15 @@ fun TerminalMessageCard(
     val borderColor = when {
         isUser -> Color(0xFFB388FF).copy(alpha = 0.5f)
         isError -> Color(0xFFEF5350).copy(alpha = 0.5f)
+        isOffline -> Color(0xFFFFB74D).copy(alpha = 0.5f)
         isTool -> Color(0xFF00E676).copy(alpha = 0.5f)
         else -> Color(0xFF00E5FF).copy(alpha = 0.3f)
     }
 
     val tagText = when {
-        isUser -> "USER INPUT"
+        isUser -> if (rawMessage.contains("Offline")) "USER (OFFLINE)" else "USER INPUT"
         isError -> "SYSTEM ALERT"
+        isOffline -> "OFFLINE ON-DEVICE"
         isTool -> "TOOL EXECUTION"
         else -> "X NEURAL ENGINE"
     }
@@ -264,6 +269,7 @@ fun TerminalMessageCard(
     val tagColor = when {
         isUser -> Color(0xFFD1C4E9)
         isError -> Color(0xFFFF8A80)
+        isOffline -> Color(0xFFFFD180)
         isTool -> Color(0xFFB9F6CA)
         else -> Color(0xFF80D8FF)
     }
@@ -303,7 +309,7 @@ fun TerminalMessageCard(
                 text = rawMessage,
                 color = Color.White.copy(alpha = 0.95f),
                 fontSize = 14.sp,
-                fontFamily = if (isTool) FontFamily.Monospace else FontFamily.Default,
+                fontFamily = if (isTool || isOffline) FontFamily.Monospace else FontFamily.Default,
                 lineHeight = 20.sp
             )
         }
