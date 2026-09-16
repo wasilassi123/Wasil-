@@ -29,6 +29,11 @@ jobs:
           java -version
           echo "JAVA_HOME: $JAVA_HOME"
 
+          if [ -z "$JAVA_HOME" ]; then
+            echo "Error: JAVA_HOME is not set."
+            exit 1
+          fi
+
           JAVA_VERSION_STRING=$(java -version 2>&1 | head -n 1 | awk -F '"' '{print $2}')
           echo "Detected Java version string: $JAVA_VERSION_STRING"
 
@@ -64,7 +69,7 @@ jobs:
             echo "./debug.keystore already exists."
           else
             echo "./debug.keystore is missing. Generating temporary debug keystore using keytool..."
-            keytool -genkeypair -v \
+            "$JAVA_HOME/bin/keytool" -genkeypair -v \
               -keystore ./debug.keystore \
               -alias androiddebugkey \
               -keyalg RSA \
@@ -212,13 +217,16 @@ jobs:
           RELEASE_NOTES=$(printf "%s\n" \
             "### Automated Debug APK Build" \
             "" \
-            "- **Build System**: GitHub Actions" \
+            "- **Build Type**: Automatically generated debug APK" \
+            "- **Built By**: GitHub Actions" \
             "- **Run Number**: ${GITHUB_RUN_NUMBER}" \
             "- **Run Attempt**: ${GITHUB_RUN_ATTEMPT}" \
-            "- **Commit SHA**: ${GITHUB_SHA}" \
-            "- **Target**: Testing & Development Only" \
+            "- **Source Commit SHA**: ${GITHUB_SHA}" \
+            "- **Purpose**: Intended for testing only" \
+            "- **Production Notice**: This is not a Play Store production release" \
+            "- **Signing Status**: Signed only with a temporary debug keystore" \
             "" \
-            "> **Note**: This APK is an automated debug build intended for testing. It is **not** a Google Play Store production release and is signed only with a temporary debug keystore.")
+            "> This is an automatically generated debug APK built by GitHub Actions. The APK is intended for testing and is not a Play Store production release. It is signed only with a temporary debug keystore.")
 
           echo "Creating release $RELEASE_TAG for commit $GITHUB_SHA..."
           gh release create "$RELEASE_TAG" "$RELEASE_ASSET_PATH" \
@@ -244,7 +252,7 @@ jobs:
             echo "GitHub Release publishing SUCCEEDED."
 
             gh release view "$RELEASE_TAG" --json url,tagName,title 2>/dev/null || true
-            RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
+            RELEASE_URL=$(gh release view "$RELEASE_TAG" --json url -q .url 2>/dev/null || echo "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}")
 
             echo "Release Tag: $RELEASE_TAG"
             echo "Release Title: $RELEASE_TITLE"
@@ -254,10 +262,10 @@ jobs:
             {
               echo "### 🚀 Debug APK Build & Release Succeeded"
               echo ""
-              echo "**Release Title**: $RELEASE_TITLE"
-              echo "**Release Tag**: \`$RELEASE_TAG\`"
-              echo "**Release Page**: [View GitHub Release]($RELEASE_URL)"
-              echo "**Release Asset**: \`$RELEASE_ASSET_NAME\`"
+              echo "- **Release Title**: $RELEASE_TITLE"
+              echo "- **Release Tag**: \`$RELEASE_TAG\`"
+              echo "- **Direct Download Page**: [View GitHub Release]($RELEASE_URL)"
+              echo "- **APK Asset Filename**: \`$RELEASE_ASSET_NAME\`"
               echo ""
               echo "📱 **Download Instructions**:"
               echo "You can download the APK directly on your phone from the **Assets** section of the [Release Page]($RELEASE_URL)."
@@ -267,14 +275,13 @@ jobs:
           else
             echo "::warning::GitHub Release publishing did not succeed or was skipped."
             echo "APK Build Status: SUCCEEDED"
-            echo "Artifact Status: Actions artifact 'app-debug-apk' is preserved and available."
+            echo "Artifact Status: Actions artifact 'app-debug-apk' remains available."
 
             {
               echo "### ⚠️ Debug APK Build Succeeded (Release Publishing Incomplete)"
               echo ""
               echo "- **APK Build**: Succeeded (app-debug.apk created successfully)."
-              echo "- **GitHub Actions Artifact**: The backup artifact \`app-debug-apk\` was uploaded and remains available in this run's summary."
-              echo "- **GitHub Release**: Publishing encountered an issue or permission restriction. Please download the APK from the workflow artifacts above."
+              echo "- **GitHub Actions Artifact**: The backup artifact \`app-debug-apk\` remains available in this workflow run's summary."
+              echo "- **GitHub Release**: Publishing encountered an issue or was skipped. Please download the APK from the Actions artifact named \`app-debug-apk\`."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
-
